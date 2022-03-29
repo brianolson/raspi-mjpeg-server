@@ -17,10 +17,19 @@ libcamera is the new RaspberryPiOS toolset as of about 2021-10. Previous RPi OS 
 sudo apt-get install -y libcamera-apps
 ```
 
+It should Just Work...
+
+```sh
+raspi-mjpeg-server -cmd '{"cmd":["libcamera-vid", "-t", "60000", "-n", "--framerate", "7", "--codec", "mjpeg", "--awb", "auto", "--width", "1920", "--height", "1080", "-o", "-"], "retry":"500ms"}' -addr :8412
+```
+
+It exposes `/jpeg` for the latest still and `/mjpeg` for a stream.
+`/mjpeg` accepts `?start=-10` to start 10 seconds ago (or -5, etc). The stream should run at a slightly faster frame rate until it catches up to now.
+
 It's possible to do development elsewhere and just run the libcamera-vid on the raspi over ssh:
 
 ```sh
-raspi-mjpeg-server -cmd '{"cmd":["ssh", "pi@raspberypi.local.", "libcamera-vid", "-t", "60000", "-n", "--framerate", "7", "--codec", "mjpeg", "--awb", "auto", "--width", "1920", "--height", "1080", "-o", "-"], "retry":"2s"}' -addr :8172
+raspi-mjpeg-server -cmd '{"cmd":["ssh", "pi@raspberypi.local.", "libcamera-vid", "-t", "60000", "-n", "--framerate", "7", "--codec", "mjpeg", "--awb", "auto", "--width", "1920", "--height", "1080", "-o", "-"], "retry":"2s"}' -addr :8412
 ```
 
 This kind of customization allows for all of the libcamera-vid options like `--roi` region-of-interest and flips and other transformations and options.
