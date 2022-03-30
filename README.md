@@ -5,17 +5,33 @@ Wraps `libcamera-vid` or potentially older `raspivid` tool.
 
 ## Install
 
+libcamera is the new RaspberryPiOS toolset as of about 2021-10. Previous RPi OS probably already have `raspivid` installed.
+
+```sh
+sudo apt-get install -y libcamera-apps
+```
+
+### Compile On RaspberryPi
+
 Install Go [http://golang.org/dl]
 
 ```sh
 go install https://github.org/brianolson/raspi-mjpeg-server@latest
 ```
 
-libcamera is the new RaspberryPiOS toolset as of about 2021-10. Previous RPi OS probably already have `raspivid` installed.
+### Cross Compile
+
+Did you know every Go install is a fully capable cross compiler? Compile on your big fast thing and ship the fully static binary off to the little Raspberry Pi
 
 ```sh
-sudo apt-get install -y libcamera-apps
+git clone https://github.com/brianolson/raspi-mjpeg-server.git
+cd raspi-mjpeg-server
+GOARCH=arm GOOS=linux go build -o raspi-mjpeg-server-arm-linux
+#GOARCH=arm64 GOOS=linux go build -o raspi-mjpeg-server-arm64-linux
+scp -p raspi-mjpeg-server-arm-linux pi@raspberrypi.local.:~/
 ```
+
+## Running
 
 It should Just Work...
 

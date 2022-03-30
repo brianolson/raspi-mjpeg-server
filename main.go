@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -66,6 +67,7 @@ func main() {
 		Addr:    addr,
 		Handler: &js,
 	}
+	log.Printf("serving on %s", addr)
 	err = server.ListenAndServe()
 	maybefail(err, "http: %v", err)
 }
