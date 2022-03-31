@@ -85,6 +85,7 @@ func (s *commandMJPEGSource) runOnce() {
 		log.Printf("cmd setup: %v", err)
 		return
 	}
+	defer stdout.Close()
 	err = cmd.Start()
 	if err != nil {
 		log.Printf("cmd start: %v", err)
