@@ -91,6 +91,7 @@ func (s *commandMJPEGSource) runOnce() {
 		log.Printf("cmd start: %v", err)
 		return
 	}
+	defer waitWithTimeout(cmd, 2*time.Second)
 	log.Printf("started command")
 	for {
 		select {
@@ -115,4 +116,17 @@ func (s *commandMJPEGSource) runOnce() {
 
 func (s *commandMJPEGSource) Read(b []byte) (int, error) {
 	return s.reader.Read(b)
+}
+
+func waitWithTimeout(cmd *exec.Cmd, timeout time.Duration) {
+	waitDone := make(chan int, 0)
+	go func() {
+		cmd.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+	case <-time.After(timeout):
+		cmd.Process.Kill()
+	}
 }
