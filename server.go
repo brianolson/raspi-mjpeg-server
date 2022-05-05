@@ -4,7 +4,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/hex"
 	"fmt"
+	"image/jpeg"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -39,6 +43,7 @@ type jpegServer struct {
 
 // run thread
 func (js *jpegServer) reader(wg *sync.WaitGroup) {
+	debug("js reader")
 	// init stuff
 	if js.maxcount == 0 {
 		js.maxcount = 10 * 10
@@ -52,6 +57,19 @@ func (js *jpegServer) reader(wg *sync.WaitGroup) {
 		defer wg.Done()
 	}
 	for blob := range js.incoming {
+		debug("got jpeg blob %d bytes", len(blob))
+		if len(blob) < 20 {
+			log.Printf("weird short jpeg %s", hex.EncodeToString(blob))
+			continue
+		}
+		if verbose {
+			br := bytes.NewReader(blob)
+			_, err := jpeg.Decode(br)
+			if err != nil {
+				debug("[%d]byte jpeg decode error: %v", len(blob), err)
+				continue
+			}
+		}
 		js.push(blob)
 	}
 }
@@ -183,6 +201,10 @@ func (js *jpegServer) ServeHTTP(out http.ResponseWriter, request *http.Request) 
 	if path == "/jpeg" {
 		out.Header().Set("Content-Type", "image/jpeg")
 		out.Write(js.getNewest())
+		return
+	}
+	if path == "/favicon.ico" {
+		http.Error(out, "no", http.StatusNotFound)
 		return
 	}
 	if path == "/" {

@@ -30,11 +30,13 @@ func breakBinaryMJPEGStream(fin ReaderAndByteReader, out chan<- []byte) error {
 			return fmt.Errorf("Bad JPEG Tag %02x%02x", tag[0], tag[1])
 		}
 		if tag[1] == 0xd8 {
+			debug("SOI")
 			// start of image
 			next.Reset()
 			next.Write(tag[:])
 		} else if tag[1] == 0xda {
 			// start of scan
+			debug("scan")
 			next.Write(tag[:])
 			_, err = fin.Read(sizeb[:])
 			if err != nil {
@@ -60,14 +62,42 @@ func breakBinaryMJPEGStream(fin ReaderAndByteReader, out chan<- []byte) error {
 				if wasff && c == 0xd9 {
 					// end of image
 					blob := next.Bytes()
-					//fmt.Printf("EOI %d bytes\n", len(blob))
+					debug("EOI %d bytes\n", len(blob))
 					bc := make([]byte, len(blob))
 					copy(bc, blob)
 					out <- bc
 					next.Reset()
+					wasff = false
+					break
 				}
 				wasff = (c == 0xff)
 			}
+			// skip junk (v4l2 cheap mjpeg webcam) until next ffd8 SOI
+			for {
+				c, err = fin.ReadByte()
+				if err != nil {
+					return err
+				}
+				if wasff && c == 0xd8 {
+					tag[0] = 0xff
+					tag[1] = 0xd8
+					next.Write(tag[:])
+					debug("SOI 2")
+					break
+				}
+				wasff = (c == 0xff)
+			}
+			debug("scan done")
+		} else if tag[1] == 0xdd {
+			// define restart interval
+			next.Write(tag[:])
+			_, err = io.CopyN(&next, fin, 4)
+			if err != nil {
+				return err
+			}
+		} else if tag[1] >= 0xd0 && tag[1] <= 0xd7 {
+			// "restart" tags (no size, like SOI/EOI)
+			next.Write(tag[:])
 		} else {
 			// tag+length copy
 			next.Write(tag[:])

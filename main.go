@@ -19,6 +19,15 @@ func maybefail(err error, xf string, args ...interface{}) {
 	os.Exit(1)
 }
 
+var verbose = false
+
+func debug(xf string, args ...interface{}) {
+	if !verbose {
+		return
+	}
+	log.Printf(xf+"\n", args...)
+}
+
 var defaultcmd = `{"cmd":["libcamera-vid", "-t", "60000", "-n", "--framerate", "7", "--codec", "mjpeg", "--awb", "auto", "--width", "1920", "--height", "1080", "-o", "-"], "retry":"500ms"}`
 
 func main() {
@@ -26,8 +35,22 @@ func main() {
 	flag.StringVar(&cmd, "cmd", defaultcmd, "json {\"cmd\":[], \"retry\":\"1000ms\"}, may be json literal or filename or \"-\" for stdin json")
 	var addr string
 	flag.StringVar(&addr, "addr", ":8412", "host:port for http serving")
+	var logPath string
+	flag.StringVar(&logPath, "log", "", "path to log to (stderr default)")
+	flag.BoolVar(&verbose, "verbose", false, "more logging")
 
 	flag.Parse()
+
+	debug("verbose enabled")
+
+	if logPath != "" {
+		lout, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		maybefail(err, "%s: %v", logPath, err)
+		log.SetOutput(lout)
+		defer lout.Close()
+	} else {
+		log.SetOutput(os.Stderr)
+	}
 
 	ctx := context.Background()
 

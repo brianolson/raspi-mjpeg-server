@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"time"
 )
@@ -55,7 +56,7 @@ func JsonCmd(ctx context.Context, fin io.Reader) (*commandMJPEGSource, error) {
 
 func (s *commandMJPEGSource) Init() {
 	s.reader, s.out = io.Pipe()
-	if s.retryDelay < 1 {
+	if s.retryDelay == 0 {
 		s.retryDelay = time.Second
 	}
 	if s.ctx == nil {
@@ -80,6 +81,7 @@ func (s *commandMJPEGSource) runOnce() {
 		s.buf = make([]byte, 128*1024)
 	}
 	cmd := exec.CommandContext(s.ctx, s.argv[0], s.argv[1:]...)
+	cmd.Stderr = os.Stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		log.Printf("cmd setup: %v", err)
@@ -93,6 +95,7 @@ func (s *commandMJPEGSource) runOnce() {
 	}
 	defer waitWithTimeout(cmd, 2*time.Second)
 	log.Printf("started command")
+	total := 0
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -106,16 +109,19 @@ func (s *commandMJPEGSource) runOnce() {
 				log.Printf("cmd data internal write: %v", e2)
 				return
 			}
+			total += actual
 		}
 		if err != nil {
-			log.Printf("cmd read: %v", err)
+			log.Printf("cmd read: %v (after %d)", err, total)
 			return
 		}
 	}
 }
 
 func (s *commandMJPEGSource) Read(b []byte) (int, error) {
-	return s.reader.Read(b)
+	l, e := s.reader.Read(b)
+	//debug("mjs [%d]byte %v", l, e)
+	return l, e
 }
 
 func waitWithTimeout(cmd *exec.Cmd, timeout time.Duration) {
