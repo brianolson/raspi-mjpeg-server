@@ -50,6 +50,16 @@ raspi-mjpeg-server -cmd '{"cmd":["ssh", "pi@raspberypi.local.", "libcamera-vid",
 
 This kind of customization allows for all of the libcamera-vid options like `--roi` region-of-interest and flips and other transformations and options.
 
+### Video4Linux /dev/video*
+
+Many v4l devices, and especially many USB web cameras, have an efficient built in compressor that dumps mjpeg.
+
+```sh
+(cd v4l_mjpeg_cat/; make)
+./raspi-mjpeg-server -cmd '{"cmd":["v4l_mjpeg_cat/v4l_mjpeg_cat", "-c", "1000", "-d", "/dev/video0"], "retry":"5ms"}' -addr :8412
+```
+
+
 -----
 
 Parts based on https://github.com/mattn/go-mjpeg

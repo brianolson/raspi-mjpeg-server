@@ -40,7 +40,7 @@ static unsigned int height = 720;
 static unsigned int fps = 30;
 static char* jpegFilename = NULL;//"output.jpg";
 static char* deviceName = "/dev/video0";
-static unsigned int frame_count = 1;
+static unsigned int frame_count = 1000;
 static bool verbose = false;
 static int out_fd = STDOUT_FILENO;
 
