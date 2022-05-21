@@ -1,30 +1,19 @@
-package main
+package jd
 
 import (
-	"flag"
 	"fmt"
 	"image"
-	"image/jpeg"
 	_ "image/jpeg"
-	"log"
-	"os"
+	"io"
 )
 
-func maybefail(err error, xf string, args ...interface{}) {
-	if err == nil {
-		return
-	}
-	fmt.Fprintf(os.Stderr, xf+"\n", args...)
-	os.Exit(1)
-}
-
-var verbose = true
+var Verbose io.Writer = nil
 
 func debug(xf string, args ...interface{}) {
-	if !verbose {
+	if Verbose == nil {
 		return
 	}
-	log.Printf(xf+"\n", args...)
+	fmt.Fprintf(Verbose, xf+"\n", args...)
 }
 
 func iabsd(a, b int) int {
@@ -71,7 +60,7 @@ func findDivisor(r image.Rectangle, other []int, target int) int {
 	return besti
 }
 
-func decimateYCbCr(im *image.YCbCr) (out image.YCbCr, err error) {
+func DecimateYCbCr(im *image.YCbCr) (out image.YCbCr, err error) {
 	debug("YCbCr: YStride %d, CStride %d, sub %s, %s", im.YStride, im.CStride, im.SubsampleRatio, im.Rect)
 	var other = [5]int{len(im.Y), len(im.Cb), len(im.Cr), im.YStride, im.CStride}
 	div := findDivisor(im.Rect, other[:], 150)
@@ -142,33 +131,4 @@ func decimateYCbCr(im *image.YCbCr) (out image.YCbCr, err error) {
 	}
 	err = nil
 	return
-}
-
-func main() {
-	var fname string
-	flag.StringVar(&fname, "i", "a.jpeg", "jpeg file name to read")
-	var oname string
-	flag.StringVar(&oname, "o", "a_sm.jpeg", "jpeg file name to write")
-
-	flag.Parse()
-
-	fin, err := os.Open(fname)
-	maybefail(err, "%s: %v", fname, err)
-
-	im, imfmt, err := image.Decode(fin)
-	debug("imfmt: %s, %T", imfmt, im)
-
-	imycbcr, ok := im.(*image.YCbCr)
-	if ok {
-		imsm, err := decimateYCbCr(imycbcr)
-		maybefail(err, "%s: decimateYCbCr %v", fname, err)
-		//debug("imsm %s", &imsm)
-		if oname != "" {
-			fout, err := os.Create(oname)
-			maybefail(err, "%s: create %v", oname, err)
-			err = jpeg.Encode(fout, &imsm, &jpeg.Options{Quality: 90})
-			maybefail(err, "%s: jpeg %v", oname, err)
-			fout.Close()
-		}
-	}
 }
