@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"image"
 	"image/jpeg"
 	"log"
 	"mime/multipart"
@@ -18,23 +19,36 @@ import (
 )
 
 type jpegt struct {
+	// Raw JPEG bytes from source
 	blob []byte
+	// Time when we got this frame
 	when time.Time
 
+	// Go Image of unpacked JPEG
+	unpacked image.Image
+	// Tiny Image for pixel motion comparison
+	mini image.Image
+
+	// doubly linked list
 	next *jpegt
 	prev *jpegt
 }
 
 type jpegServer struct {
 	incoming <-chan []byte
-	l        sync.Mutex
-	cond     *sync.Cond
+	// Lock around any operation on the list of frames we're holding .newest to .oldest
+	l sync.Mutex
+	// .cond.Broadcast() when a new frame arrives
+	cond *sync.Cond
 
+	// frame just arrived
 	newest *jpegt
+	// last frame we're still holding
 	oldest *jpegt
 	count  int
 	tlen   int
 
+	// free-list
 	free *jpegt
 
 	maxcount int
@@ -118,6 +132,7 @@ func (js *jpegServer) push(blob []byte) {
 	js.cond.Broadcast()
 }
 
+// return newest jpeg blob, handy for serving
 func (js *jpegServer) getNewest() []byte {
 	js.l.Lock()
 	defer js.l.Unlock()
@@ -127,8 +142,7 @@ func (js *jpegServer) getNewest() []byte {
 	return js.newest.blob
 }
 
-// return a copy of newest jpegt
-// copy works around some threading mess
+// return newest jpeg blob and time
 func (js *jpegServer) getNewestJT() (blob []byte, when time.Time) {
 	js.l.Lock()
 	defer js.l.Unlock()
@@ -140,6 +154,8 @@ func (js *jpegServer) getNewestJT() (blob []byte, when time.Time) {
 	when = js.newest.when
 	return
 }
+
+// return jpeg blob and time for next frame after some time
 func (js *jpegServer) getAfterJT(then time.Time) (blob []byte, when time.Time) {
 	js.l.Lock()
 	defer js.l.Unlock()
@@ -155,6 +171,8 @@ func (js *jpegServer) getAfterJT(then time.Time) (blob []byte, when time.Time) {
 	blob = nil
 	return
 }
+
+// return jpeg blob and time for next frame after some time, possibly waiting until the first frame to arrive afer that time
 func (js *jpegServer) waitAfterJT(then time.Time) (blob []byte, when time.Time) {
 	js.l.Lock()
 	defer js.l.Unlock()
@@ -177,6 +195,7 @@ func (js *jpegServer) waitAfterJT(then time.Time) (blob []byte, when time.Time) 
 	}
 }
 
+// parse an int from http form value, default if none or clamped to [min,max]
 func formInt(request *http.Request, name string, defaultValue, min, max int) int {
 	sv := request.FormValue(name)
 	if sv == "" {
@@ -196,6 +215,13 @@ func formInt(request *http.Request, name string, defaultValue, min, max int) int
 	return i
 }
 
+//
+//
+// serves:
+// /jpeg most recent
+// /favicon.ico
+// / -redirect> /mjpeg
+// /* mjpeg stream, ?fps=<frames per second 1..30 (15)>&start=<seconds ago, -100..0 (0)>
 func (js *jpegServer) ServeHTTP(out http.ResponseWriter, request *http.Request) {
 	path := request.URL.Path
 	if path == "/jpeg" {

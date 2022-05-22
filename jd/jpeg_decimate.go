@@ -60,10 +60,22 @@ func findDivisor(r image.Rectangle, other []int, target int) int {
 	return besti
 }
 
-func DecimateYCbCr(im *image.YCbCr) (out image.YCbCr, err error) {
+func Decimate(im image.Image, targetSize int) (out image.Image, err error) {
+	imycbcr, ok := im.(*image.YCbCr)
+	if ok {
+		xo, err := DecimateYCbCr(imycbcr, targetSize)
+		if err == nil {
+			return &xo, err
+		}
+		return nil, err
+	}
+	return nil, fmt.Errorf("TODO: WRITEME Decimate%T", im)
+}
+
+func DecimateYCbCr(im *image.YCbCr, targetSize int) (out image.YCbCr, err error) {
 	debug("YCbCr: YStride %d, CStride %d, sub %s, %s", im.YStride, im.CStride, im.SubsampleRatio, im.Rect)
 	var other = [5]int{len(im.Y), len(im.Cb), len(im.Cr), im.YStride, im.CStride}
-	div := findDivisor(im.Rect, other[:], 150)
+	div := findDivisor(im.Rect, other[:], targetSize)
 	if im.SubsampleRatio != image.YCbCrSubsampleRatio422 {
 		err = fmt.Errorf("TODO: write code for subsample %s", im.SubsampleRatio)
 		return
