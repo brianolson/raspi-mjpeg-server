@@ -1,15 +1,27 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"image"
+	"log"
 	"math"
+	"time"
 
 	"github.com/brianolson/raspi-mjpeg-server/jd"
 )
 
 func ensureSmall(x *jpegt, targetSize int) (err error) {
+	if x.unpacked == nil {
+		br := bytes.NewReader(x.blob)
+		x.unpacked, _, err = image.Decode(br)
+		if err != nil {
+			err = fmt.Errorf("ensureSmall could not decode blob: %v", err)
+			return
+		}
+	}
 	sm, err := jd.Decimate(x.unpacked, targetSize)
 	if err != nil {
 		return
@@ -143,4 +155,68 @@ func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
 	}
 	score += cscore / float64(cheight*cwidth)
 	return
+}
+
+/*
+func broadcastWaitToChannel(l sync.Locker, cond *sync.Cond, out chan int) {
+	l.Lock()
+	defer l.Unlock()
+	for {
+		cond.Wait()
+		out <- 1
+	}
+}
+*/
+
+func (js *jpegServer) motionThread(ctx context.Context) {
+	// newFrames := make(chan int, 0)
+	// go broadcastWaitToChannel(&js.l, js.cond, newFrames)
+	var prev *jpegt
+	var old *jpegt
+	var then time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			break
+		default:
+		}
+		js.l.Lock()
+		js.cond.Wait()
+		newest := js.newest
+		old = nil
+		if (newest != nil) && (newest != prev) {
+			old = newest.prev
+			then = newest.when.Add(-1 * time.Second) // TODO: configurable
+			for old != nil {
+				if old.when.Before(then) {
+					break
+				}
+				old = old.prev
+			}
+		}
+		js.l.Unlock()
+		select {
+		case <-ctx.Done():
+			break
+		default:
+		}
+		if newest == nil {
+			continue
+		}
+		if newest == prev {
+			continue
+		}
+		if old == nil {
+			continue
+		}
+
+		score, err := smallDiff(old, newest)
+		if err != nil {
+			log.Printf("diff %s-%s: %v", old.when, newest.when, err)
+		} else {
+			log.Printf("diff %s-%s: %f", old.when, newest.when, score)
+		}
+
+		prev = newest
+	}
 }

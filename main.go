@@ -84,7 +84,8 @@ func main() {
 	js := jpegServer{
 		incoming: jpegBlobs,
 	}
-	go js.reader(nil)
+	go js.reader(ctx, nil)
+	go js.motionThread(ctx)
 
 	server := &http.Server{
 		Addr:    addr,

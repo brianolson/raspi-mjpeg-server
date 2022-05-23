@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"fmt"
 	"image"
@@ -56,7 +57,7 @@ type jpegServer struct {
 }
 
 // run thread
-func (js *jpegServer) reader(wg *sync.WaitGroup) {
+func (js *jpegServer) reader(ctx context.Context, wg *sync.WaitGroup) {
 	debug("js reader")
 	// init stuff
 	if js.maxcount == 0 {
@@ -85,9 +86,16 @@ func (js *jpegServer) reader(wg *sync.WaitGroup) {
 			}
 		}
 		js.push(blob)
+		select {
+		case <-ctx.Done():
+			break
+		default:
+		}
 	}
 }
 
+// receive a new jpeg blob
+// keep it for later; notify listeners
 func (js *jpegServer) push(blob []byte) {
 	now := time.Now()
 	js.l.Lock()
@@ -133,7 +141,7 @@ func (js *jpegServer) push(blob []byte) {
 }
 
 // return newest jpeg blob, handy for serving
-func (js *jpegServer) getNewest() []byte {
+func (js *jpegServer) getNewestJpegBlob() []byte {
 	js.l.Lock()
 	defer js.l.Unlock()
 	if js.newest == nil {
@@ -143,16 +151,13 @@ func (js *jpegServer) getNewest() []byte {
 }
 
 // return newest jpeg blob and time
-func (js *jpegServer) getNewestJT() (blob []byte, when time.Time) {
+func (js *jpegServer) getNewest() *jpegt {
 	js.l.Lock()
 	defer js.l.Unlock()
 	if js.newest == nil {
-		blob = nil
-		return
+		return nil
 	}
-	blob = js.newest.blob
-	when = js.newest.when
-	return
+	return js.newest
 }
 
 // return jpeg blob and time for next frame after some time
@@ -170,6 +175,20 @@ func (js *jpegServer) getAfterJT(then time.Time) (blob []byte, when time.Time) {
 	}
 	blob = nil
 	return
+}
+
+// return jpeg blob and time for next frame before some time
+func (js *jpegServer) getBefore(then time.Time) *jpegt {
+	js.l.Lock()
+	defer js.l.Unlock()
+	cur := js.newest
+	for cur != nil {
+		if cur.when.Before(then) {
+			return cur
+		}
+		cur = cur.prev
+	}
+	return nil
 }
 
 // return jpeg blob and time for next frame after some time, possibly waiting until the first frame to arrive afer that time
@@ -226,7 +245,7 @@ func (js *jpegServer) ServeHTTP(out http.ResponseWriter, request *http.Request) 
 	path := request.URL.Path
 	if path == "/jpeg" {
 		out.Header().Set("Content-Type", "image/jpeg")
-		out.Write(js.getNewest())
+		out.Write(js.getNewestJpegBlob())
 		return
 	}
 	if path == "/favicon.ico" {
@@ -264,7 +283,9 @@ func (js *jpegServer) ServeHTTP(out http.ResponseWriter, request *http.Request) 
 	st := fmt.Sprint(startTime.Unix())
 	for {
 		if blob == nil {
-			blob, when = js.getNewestJT()
+			newest := js.getNewest()
+			blob = newest.blob
+			when = newest.when
 		} else {
 			if !caughtUp {
 				nb, nw := js.getAfterJT(when)
