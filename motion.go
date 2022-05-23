@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"math"
@@ -56,15 +57,24 @@ type subsampleParts struct {
 var subsampleKey = []subsampleParts{
 	subsampleParts{image.YCbCrSubsampleRatio444, 1, 1},
 	subsampleParts{image.YCbCrSubsampleRatio422, 1, 2},
+	subsampleParts{image.YCbCrSubsampleRatio420, 2, 2},
+	subsampleParts{image.YCbCrSubsampleRatio440, 2, 1},
+	subsampleParts{image.YCbCrSubsampleRatio411, 1, 4},
+	subsampleParts{image.YCbCrSubsampleRatio410, 2, 4},
 }
 
-func getsk(im *image.YCbCr) subsampleParts {
+var ErrUnknownSubsample = errors.New("unknown YCbCrSubsampleRatio")
+
+func getsk(im *image.YCbCr) (out subsampleParts, err error) {
 	for _, sk := range subsampleKey {
 		if sk.rat == im.SubsampleRatio {
-			return sk
+			out = sk
+			return
 		}
 	}
-	return subsampleParts{0, 0, 0}
+
+	err = ErrUnknownSubsample
+	return
 }
 
 func polarize(x, y uint8) (r, th float64) {
@@ -91,7 +101,10 @@ func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
 		return
 	}
 
-	sk := getsk(a)
+	sk, err := getsk(a)
+	if err != nil {
+		return
+	}
 
 	yDiff := 0
 
@@ -129,6 +142,5 @@ func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
 		}
 	}
 	score += cscore / float64(cheight*cwidth)
-	err = fmt.Errorf("TODO WRITEME")
 	return
 }
