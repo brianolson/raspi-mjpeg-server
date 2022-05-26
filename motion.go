@@ -95,7 +95,7 @@ func polarize(x, y uint8) (r, th float64) {
 	return
 }
 
-func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
+func checkYCbCr(a, b *image.YCbCr) (err error) {
 	if a.YStride != b.YStride {
 		err = fmt.Errorf("a.YStride (%d) != b.YStride (%d)", a.YStride, b.YStride)
 		return
@@ -112,6 +112,14 @@ func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
 		err = fmt.Errorf("a.Rect (%d) != b.Rect (%d)", a.Rect, b.Rect)
 		return
 	}
+	return
+}
+
+func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
+	err = checkYCbCr(a, b)
+	if err != nil {
+		return
+	}
 
 	sk, err := getsk(a)
 	if err != nil {
@@ -123,7 +131,7 @@ func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
 	for y := 0; y < a.Rect.Dy(); y++ {
 		by := a.YStride * y
 		for x := 0; x < a.Rect.Dx(); x++ {
-			dy := a.Y[by+x] - b.Y[by+x]
+			dy := int(a.Y[by+x]) - int(b.Y[by+x])
 			if dy < 0 {
 				dy = -dy
 			}
@@ -157,20 +165,7 @@ func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
 	return
 }
 
-/*
-func broadcastWaitToChannel(l sync.Locker, cond *sync.Cond, out chan int) {
-	l.Lock()
-	defer l.Unlock()
-	for {
-		cond.Wait()
-		out <- 1
-	}
-}
-*/
-
 func (js *jpegServer) motionThread(ctx context.Context) {
-	// newFrames := make(chan int, 0)
-	// go broadcastWaitToChannel(&js.l, js.cond, newFrames)
 	var prev *jpegt
 	var old *jpegt
 	var then time.Time

@@ -59,6 +59,10 @@ Many v4l devices, and especially many USB web cameras, have an efficient built i
 ./raspi-mjpeg-server -cmd '{"cmd":["v4l_mjpeg_cat/v4l_mjpeg_cat", "-c", "1000", "-d", "/dev/video0"], "retry":"5ms"}' -addr :8412
 ```
 
+http://localhost:8412/mjpeg
+http://localhost:8412/jpeg
+
+
 
 -----
 
