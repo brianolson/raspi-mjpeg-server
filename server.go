@@ -614,12 +614,12 @@ func debugImDiff(old, new *jpegt, thresh uint8) (blob []byte, err error) {
 	}
 	aycbcr, ok := old.mini.(*image.YCbCr)
 	if !ok {
-		err = fmt.Errorf("TODO: WRITEME debugImDiff %T", old)
+		err = fmt.Errorf("TODO: WRITEME debugImDiff %T", old.mini)
 		return
 	}
 	bycbcr, ok := new.mini.(*image.YCbCr)
 	if !ok {
-		err = fmt.Errorf("TODO: WRITEME debugImDiff %T", new)
+		err = fmt.Errorf("TODO: WRITEME debugImDiff %T", new.mini)
 		return
 	}
 	return debugImDiffYCbCr(aycbcr, bycbcr, thresh)

@@ -63,6 +63,16 @@ http://localhost:8412/mjpeg
 http://localhost:8412/jpeg
 
 
+## Development
+
+http://localhost:8412/debug?fps=N&thresh=N&d=t
+
+```
+?fps=N limit frames per second
+?thresh=N motion threshold
+?d=t diff mode true (default off)
+```
+
 
 -----
 
