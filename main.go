@@ -8,7 +8,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
+	"time"
 )
 
 func maybefail(err error, xf string, args ...interface{}) {
@@ -30,6 +34,32 @@ func debug(xf string, args ...interface{}) {
 
 var defaultcmd = `{"cmd":["libcamera-vid", "-t", "60000", "-n", "--framerate", "7", "--codec", "mjpeg", "--awb", "auto", "--width", "1920", "--height", "1080", "-o", "-"], "retry":"500ms"}`
 
+func startShutdown(server *http.Server, wg *sync.WaitGroup, ctx context.Context) {
+	wg.Add(1)
+	defer wg.Done()
+	err := server.Shutdown(ctx)
+	if err != nil {
+		log.Printf("http shutdown: %v", err)
+	}
+}
+
+func signalHandler(server *http.Server, wg *sync.WaitGroup, ctx context.Context) {
+	sc := make(chan os.Signal, 1)
+	signal.Notify(sc, os.Interrupt, syscall.SIGTERM)
+	select {
+	case <-sc:
+		log.Printf("shutting down...")
+		startShutdown(server, wg, ctx)
+	case <-ctx.Done():
+	}
+}
+
+var motionScoreThreshold float64 = 0.03
+var motionPrerollSeconds float64 = 1.0
+var motionPostSeconds float64 = 1.0
+var motionPostDuration time.Duration = time.Second
+var mjpegCapturePathTemplate string = "/big/bolson/bmotion/%T.mjpeg"
+
 func main() {
 	var cmd string
 	flag.StringVar(&cmd, "cmd", defaultcmd, "json {\"cmd\":[], \"retry\":\"1000ms\"}, may be json literal or filename or \"-\" for stdin json")
@@ -38,6 +68,8 @@ func main() {
 	var logPath string
 	flag.StringVar(&logPath, "log", "", "path to log to (stderr default)")
 	flag.BoolVar(&verbose, "verbose", false, "more logging")
+	var statLogPath string
+	flag.StringVar(&statLogPath, "statlog", "", "path to log json-per-line stats to")
 
 	flag.Parse()
 
@@ -52,7 +84,21 @@ func main() {
 		log.SetOutput(os.Stderr)
 	}
 
+	if statLogPath != "" {
+		statLogF, err := os.OpenFile(statLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		maybefail(err, "%s: %v", statLogPath, err)
+		defer statLogF.Close()
+		statLog = statLogF
+	}
+
+	motionPostDuration = time.Duration(float64(time.Second) * motionPostSeconds)
+
 	ctx := context.Background()
+
+	ctx, ctxCf := context.WithCancel(ctx)
+	defer ctxCf()
+
+	var shutdownWg sync.WaitGroup
 
 	if len(cmd) == 0 {
 		fmt.Fprintf(os.Stderr, "-cmd is required")
@@ -93,6 +139,12 @@ func main() {
 		Handler: &js,
 	}
 	log.Printf("serving on %s", addr)
+	go signalHandler(server, &shutdownWg, ctx)
 	err = server.ListenAndServe()
-	maybefail(err, "http: %v", err)
+	if err == http.ErrServerClosed {
+		// okay, wait for Shutdown
+		shutdownWg.Wait()
+	} else {
+		maybefail(err, "http: %v", err)
+	}
 }

@@ -3,15 +3,22 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
+	"io"
 	"log"
 	"math"
+	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/brianolson/raspi-mjpeg-server/jd"
 )
+
+var statLog io.Writer
 
 func ensureSmall(x *jpegt, targetSize int) (err error) {
 	if x.unpacked == nil {
@@ -115,6 +122,13 @@ func checkYCbCr(a, b *image.YCbCr) (err error) {
 	return
 }
 
+type diffScoreYCbCrStat struct {
+	Stat   string  `json:"stat"` // always "dsYCbCr"
+	YScore float64 `json:"ys"`
+	CScore float64 `json:"cs"`
+	Score  float64 `json:"ds"`
+}
+
 func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
 	err = checkYCbCr(a, b)
 	if err != nil {
@@ -143,7 +157,7 @@ func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
 			}
 		}
 	}
-	score = float64(yDiff) / float64(255*a.Rect.Dx()*a.Rect.Dy())
+	yscore := float64(yDiff) / float64(255*a.Rect.Dx()*a.Rect.Dy())
 	cheight := a.Rect.Dy() / sk.dy
 	cwidth := a.Rect.Dx() / sk.dx
 	cscore := float64(0)
@@ -161,9 +175,25 @@ func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
 			cscore += dr / 255.0
 		}
 	}
-	score += cscore / float64(cheight*cwidth)
+	cscore = cscore / float64(cheight*cwidth)
+	if statLog != nil {
+		rec := diffScoreYCbCrStat{
+			Stat:   "dsYCbCr",
+			YScore: yscore,
+			CScore: cscore,
+			Score:  yscore + cscore,
+		}
+		blob, merr := json.Marshal(rec)
+		if merr == nil {
+			blob = append(blob, '\n')
+			statLog.Write(blob)
+		}
+	}
+	score = yscore + cscore
 	return
 }
+
+const timestampFormat = "20060102_150405.999999999"
 
 func (js *jpegServer) motionThread(ctx context.Context) {
 	var prev *jpegt
@@ -209,9 +239,87 @@ func (js *jpegServer) motionThread(ctx context.Context) {
 		if err != nil {
 			log.Printf("diff %s-%s: %v", old.when, newest.when, err)
 		} else {
-			log.Printf("diff %s-%s: %f", old.when, newest.when, score)
+			if score > motionScoreThreshold {
+				log.Printf("diff %s-%s: ds=%f", old.when, newest.when, score)
+				js.motionPing()
+			}
 		}
 
 		prev = newest
+	}
+}
+
+type captureThread struct {
+	out io.WriteCloser
+
+	js *jpegServer
+
+	l sync.Mutex
+
+	lastPing time.Time
+}
+
+func (ct *captureThread) ping() {
+	ct.l.Lock()
+	defer ct.l.Unlock()
+	ct.lastPing = time.Now()
+}
+
+func (ct *captureThread) run() {
+	defer ct.js.captureEnded()
+	newest := ct.js.getNewest()
+	if newest == nil {
+		return
+	}
+	var start time.Time
+	var current *jpegt
+	if motionPrerollSeconds > 0 {
+		start = newest.when.Add(time.Duration(-1 * motionPrerollSeconds * float64(time.Second)))
+		current = ct.js.getAfter(start)
+		if current == nil {
+			return
+		}
+	} else {
+		start = newest.when
+		current = newest
+	}
+	path := strings.ReplaceAll(mjpegCapturePathTemplate, "%T", start.Format(timestampFormat))
+	var err error
+	ct.out, err = os.Create(path)
+	if err != nil {
+		log.Printf("%s: %v", path, err)
+		return
+	}
+	log.Printf("%s: capture started", path)
+	defer ct.out.Close()
+	defer func() {
+		if current != nil {
+			log.Printf("%s: recorded %s - %s", path, start.Format(timestampFormat), current.when.Format(timestampFormat))
+		}
+	}()
+	_, err = ct.out.Write(current.blob)
+	if err != nil {
+		log.Printf("%s: %v", path, err)
+		return
+	}
+	for {
+		current = ct.js.waitAfter(current.when)
+		if current == nil {
+			log.Printf("%s: nil current")
+			return
+		}
+		ct.l.Lock()
+		lp := ct.lastPing
+		ct.l.Unlock()
+		if current.when.After(lp.Add(motionPostDuration)) {
+			log.Printf("%s: done")
+			// done
+			return
+		}
+		_, err = ct.out.Write(current.blob)
+		if err != nil {
+			log.Printf("%s: %v", path, err)
+			return
+		}
 	}
 }

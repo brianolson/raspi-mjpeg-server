@@ -75,6 +75,8 @@ type jpegServer struct {
 
 	maxcount int
 	maxlen   int
+
+	capture *captureThread
 }
 
 func (js *jpegServer) init() {
@@ -161,6 +163,28 @@ func (js *jpegServer) push(blob []byte) {
 	}
 
 	js.cond.Broadcast()
+}
+
+// called by motionThread when threshold exceeded
+func (js *jpegServer) motionPing() {
+	js.l.Lock()
+	defer js.l.Unlock()
+
+	// start or continue capture
+	if js.capture == nil {
+		js.capture = new(captureThread)
+		js.capture.js = js
+		js.capture.lastPing = js.newest.when
+		go js.capture.run()
+	} else {
+		js.capture.ping()
+	}
+}
+
+func (js *jpegServer) captureEnded() {
+	js.l.Lock()
+	defer js.l.Unlock()
+	js.capture = nil
 }
 
 // return newest jpeg blob, handy for serving
