@@ -58,7 +58,7 @@ var motionScoreThreshold float64 = 0.03
 var motionPrerollSeconds float64 = 1.0
 var motionPostSeconds float64 = 1.0
 var motionPostDuration time.Duration = time.Second
-var mjpegCapturePathTemplate string = "/big/bolson/bmotion/%T.mjpeg"
+var mjpegCapturePathTemplate string = ""
 
 func main() {
 	var cmd string
@@ -70,6 +70,7 @@ func main() {
 	flag.BoolVar(&verbose, "verbose", false, "more logging")
 	var statLogPath string
 	flag.StringVar(&statLogPath, "statlog", "", "path to log json-per-line stats to")
+	flag.StringVar(&mjpegCapturePathTemplate, "mjpeg", "", "path to store motion mjpeg captures, %T gets timestamp")
 
 	flag.Parse()
 
@@ -133,6 +134,9 @@ func main() {
 	js.init()
 	go js.reader(ctx, nil)
 	go js.motionThread(ctx)
+	if statLog != nil {
+		js.scorestat = NewRollingKnnHistogram("s", 10000, statLog)
+	}
 
 	server := &http.Server{
 		Addr:    addr,

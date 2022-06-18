@@ -77,6 +77,8 @@ type jpegServer struct {
 	maxlen   int
 
 	capture *captureThread
+
+	scorestat *rollingKnnHistogram
 }
 
 func (js *jpegServer) init() {
@@ -172,10 +174,12 @@ func (js *jpegServer) motionPing() {
 
 	// start or continue capture
 	if js.capture == nil {
-		js.capture = new(captureThread)
-		js.capture.js = js
-		js.capture.lastPing = js.newest.when
-		go js.capture.run()
+		if mjpegCapturePathTemplate != "" {
+			js.capture = new(captureThread)
+			js.capture.js = js
+			js.capture.lastPing = js.newest.when
+			go js.capture.run()
+		}
 	} else {
 		js.capture.ping()
 	}

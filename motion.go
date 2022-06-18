@@ -176,7 +176,7 @@ func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
 		}
 	}
 	cscore = cscore / float64(cheight*cwidth)
-	if statLog != nil {
+	if false && statLog != nil {
 		rec := diffScoreYCbCrStat{
 			Stat:   "dsYCbCr",
 			YScore: yscore,
@@ -239,6 +239,9 @@ func (js *jpegServer) motionThread(ctx context.Context) {
 		if err != nil {
 			log.Printf("diff %s-%s: %v", old.when, newest.when, err)
 		} else {
+			if js.scorestat != nil {
+				js.scorestat.Add(score)
+			}
 			if score > motionScoreThreshold {
 				log.Printf("diff %s-%s: ds=%f", old.when, newest.when, score)
 				js.motionPing()
@@ -305,14 +308,14 @@ func (ct *captureThread) run() {
 	for {
 		current = ct.js.waitAfter(current.when)
 		if current == nil {
-			log.Printf("%s: nil current")
+			log.Printf("%s: nil current", path)
 			return
 		}
 		ct.l.Lock()
 		lp := ct.lastPing
 		ct.l.Unlock()
 		if current.when.After(lp.Add(motionPostDuration)) {
-			log.Printf("%s: done")
+			log.Printf("%s: done", path)
 			// done
 			return
 		}
