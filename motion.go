@@ -238,6 +238,8 @@ func (js *jpegServer) motionThread(ctx context.Context) {
 		score, err := smallDiff(old, newest)
 		if err != nil {
 			log.Printf("diff %s-%s: %v", old.when, newest.when, err)
+		} else if math.IsNaN(score) {
+			log.Printf("diff %s-%s: is NaN", old.when, newest.when)
 		} else {
 			if js.scorestat != nil {
 				js.scorestat.Add(score)

@@ -73,6 +73,7 @@ func (rkh *rollingKnnHistogram) Flush() {
 type KnnStatLogEntry struct {
 	Centers []float64 `json:"kc"`
 	Counts  []int     `json:"c"`
+	Raw     []float64 `json:"d,omitempty"`
 }
 
 func (rkh *rollingKnnHistogram) logKnnStats(buffer []float64, max, min float64) {
@@ -97,6 +98,7 @@ func (rkh *rollingKnnHistogram) logKnnStats(buffer []float64, max, min float64) 
 		knnAdjust(centers, sums, counts)
 	}
 	rec := KnnStatLogEntry{Centers: centers, Counts: counts}
+	rec.Raw = buffer // TODO: optional
 	var blob []byte
 	var err error
 	if rkh.name != "" {
@@ -116,6 +118,7 @@ func (rkh *rollingKnnHistogram) logKnnStats(buffer []float64, max, min float64) 
 		log.Printf("logKnnStats Write %v", err)
 		return
 	}
+	log.Printf("statlog %d recs knn", len(buffer))
 }
 
 func knnCount(centers, sums []float64, counts []int, buffer []float64) {
@@ -125,6 +128,9 @@ func knnCount(centers, sums []float64, counts []int, buffer []float64) {
 	}
 	sort.Float64s(centers)
 	for _, v := range buffer {
+		if math.IsNaN(v) {
+			continue
+		}
 		lo := 0
 		hi := len(centers) - 1
 		for {
@@ -167,6 +173,8 @@ func knnCount(centers, sums []float64, counts []int, buffer []float64) {
 func knnAdjust(centers, sums []float64, counts []int) {
 	// move centers to the center they actually were
 	for i := range centers {
-		centers[i] = sums[i] / float64(counts[i])
+		if counts[i] != 0 {
+			centers[i] = sums[i] / float64(counts[i])
+		}
 	}
 }

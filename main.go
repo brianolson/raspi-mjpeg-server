@@ -135,7 +135,7 @@ func main() {
 	go js.reader(ctx, nil)
 	go js.motionThread(ctx)
 	if statLog != nil {
-		js.scorestat = NewRollingKnnHistogram("s", 10000, statLog)
+		js.scorestat = NewRollingKnnHistogram("s", 1000, statLog)
 	}
 
 	server := &http.Server{
