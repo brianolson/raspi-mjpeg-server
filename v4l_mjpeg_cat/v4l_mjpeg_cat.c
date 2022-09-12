@@ -94,7 +94,7 @@ static int xioctl(int fd, unsigned long int request, void* argp) {
 }
 
 
-static ssize_t parseJpeg(void* buf, ssize_t n) {
+static ssize_t parseJpegAndWrite(void* buf, ssize_t n, int out_fd) {
   uint8_t* b = (uint8_t*)buf;
   int pos = 0;
   while (pos < n) {
@@ -116,7 +116,7 @@ static ssize_t parseJpeg(void* buf, ssize_t n) {
             if (pos < n) {
               debug("jpeg blob ends early %d < %ld\n", pos, n);
             }
-            return pos+1;
+            return write(out_fd, buf, pos+1);
           }
           wasff = (b[pos] == 0xff);
           pos++;
@@ -133,8 +133,17 @@ static ssize_t parseJpeg(void* buf, ssize_t n) {
       pos += skipsize + 2;
     }
   }
-  fprintf(stderr, "jpeg ended without EOI\n");
-  return n;
+  debug("jpeg ended without EOI\n");
+  {
+    ssize_t ws;
+    ws = write(out_fd, buf, pos+1);
+    if (ws == n) {
+      uint8_t EOI[2] = {0xff, 0xd9};
+      ws = write(out_fd, EOI, 2);
+      return n+ws;
+    }
+    return ws;
+  }
 }
 
 
@@ -208,8 +217,7 @@ static int frameRead(void) {
         bu[e8+8], bu[e8+9], bu[e8+10], bu[e8+11],
         bu[e8+12], bu[e8+13], bu[e8+14], bu[e8+15]
         );
-  n = parseJpeg(buffer.start, n);
-  write(out_fd, buffer.start, n);
+  parseJpegAndWrite(buffer.start, n, out_fd);
 
   return 1;
 }
@@ -218,7 +226,7 @@ static int frameRead(void) {
 /**
  * Read frames and process them
  */
-static void mainLoop(void) {	
+static void mainLoop(void) {
   unsigned int count = frame_count;
 
   while (count > 0) {
@@ -381,7 +389,7 @@ static void deviceInit(void)
   {
     struct v4l2_streamparm frameint;
     memset(&frameint, 0, sizeof(frameint));
-	
+
     /* Attempt to set the frame interval. */
     frameint.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     frameint.parm.capture.timeperframe.numerator = 1;
@@ -571,6 +579,6 @@ int main(int argc, char **argv)
   deviceClose();
 
   close(out_fd);
-  
+
   return 0;
 }
