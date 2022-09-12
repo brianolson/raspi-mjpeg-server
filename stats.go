@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"math"
+	"net/http"
 	"sort"
 )
 
@@ -17,6 +20,8 @@ type rollingKnnHistogram struct {
 	knnBuckets int
 	knnRounds  int
 
+	logRaw bool
+
 	min float64
 	max float64
 }
@@ -26,6 +31,14 @@ func NewRollingKnnHistogram(name string, size int, fout io.Writer) *rollingKnnHi
 	out.buffer = make([]float64, size)
 	out.out = fout
 	out.name = name
+	return out
+}
+
+func NewRollingKnnHistogramPOST(name string, size int, url string) *rollingKnnHistogram {
+	out := new(rollingKnnHistogram)
+	out.buffer = make([]float64, size)
+	out.name = name
+	out.out = &statSender{url: url}
 	return out
 }
 
@@ -97,8 +110,11 @@ func (rkh *rollingKnnHistogram) logKnnStats(buffer []float64, max, min float64) 
 		knnCount(centers, sums, counts, buffer)
 		knnAdjust(centers, sums, counts)
 	}
+	centers, counts = filterZeroCounts(centers, counts)
 	rec := KnnStatLogEntry{Centers: centers, Counts: counts}
-	rec.Raw = buffer // TODO: optional
+	if rkh.logRaw {
+		rec.Raw = buffer
+	}
 	var blob []byte
 	var err error
 	if rkh.name != "" {
@@ -177,4 +193,88 @@ func knnAdjust(centers, sums []float64, counts []int) {
 			centers[i] = sums[i] / float64(counts[i])
 		}
 	}
+}
+
+func filterZeroCounts(centers []float64, counts []int) ([]float64, []int) {
+	i := 0
+	for i < len(counts) {
+		if counts[i] == 0 {
+			for j := i + 1; j < len(counts); j++ {
+				counts[j-1] = counts[j]
+				centers[j-1] = centers[j]
+			}
+			counts = counts[:len(counts)-1]
+			centers = centers[:len(centers)-1]
+		} else {
+			i++
+		}
+	}
+	return centers, counts
+}
+
+type statSender struct {
+	url string
+}
+
+// implement io.Writer
+// but we know it always gets a whole message from .logKnnStats()
+func (sender *statSender) Write(blob []byte) (int, error) {
+	br := bytes.NewReader(blob)
+	response, err := http.Post(sender.url, "application/json", br)
+	if err != nil {
+		return 0, err
+	}
+	if response.StatusCode == 200 {
+		return len(blob), nil
+	}
+	return 0, fmt.Errorf("status %s", response.Status)
+}
+
+// count[i] is number of points <= ceils[i] (and > ceils[i-1])
+func autoHistogram(data []float64) (ceils []float64, counts []int) {
+	const buckets = 30
+	sum := float64(0)
+	min := data[0]
+	max := data[0]
+	for _, v := range data {
+		sum += v
+		if v < min {
+			min = v
+		}
+		if v > max {
+			max = v
+		}
+	}
+	mean := sum / float64(len(data))
+	variance := float64(0)
+	for _, v := range data {
+		d := v - mean
+		variance += (d * d)
+	}
+	variance /= float64(len(data))
+	pstddev := math.Sqrt(variance)
+	counts = make([]int, buckets+1)
+	ceils = make([]float64, buckets+1)
+	lo := mean - (3 * pstddev)
+	if lo < min {
+		lo = min
+	}
+	hi := mean + (3 * pstddev)
+	if hi > max {
+		hi = max
+	}
+	span := hi - lo
+	for i := 0; i < buckets; i++ {
+		ceils[i] = lo + ((span / 30) * float64(i))
+	}
+	ceils[buckets] = hi
+	for _, v := range data {
+		for i, ce := range ceils {
+			if v <= ce {
+				counts[i]++
+				break
+			}
+		}
+	}
+	return ceils, counts
 }

@@ -4,8 +4,10 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -26,6 +28,8 @@ type commandMJPEGSource struct {
 	reader *io.PipeReader
 
 	buf []byte
+
+	jpegBlobs chan []byte
 }
 
 type CmdJSON struct {
@@ -34,6 +38,8 @@ type CmdJSON struct {
 	RetryDelay string `json:"retry"` // for time.ParseDuration
 }
 
+// JsonCmd
+// fin is a reader on json of a CmdJSON config
 func JsonCmd(ctx context.Context, fin io.Reader) (*commandMJPEGSource, error) {
 	dec := json.NewDecoder(fin)
 	var cj CmdJSON
@@ -95,26 +101,10 @@ func (s *commandMJPEGSource) runOnce() {
 	}
 	defer waitWithTimeout(cmd, 2*time.Second)
 	log.Printf("started command")
-	total := 0
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		default:
-		}
-		actual, err := stdout.Read(s.buf)
-		if actual > 0 {
-			_, e2 := s.out.Write(s.buf[:actual])
-			if e2 != nil {
-				log.Printf("cmd data internal write: %v", e2)
-				return
-			}
-			total += actual
-		}
-		if err != nil {
-			log.Printf("cmd read: %v (after %d)", err, total)
-			return
-		}
+	br := bufio.NewReader(stdout)
+	me := breakBinaryMJPEGStream(br, s.jpegBlobs)
+	if (me != nil) && (me != io.EOF) {
+		fmt.Printf("mjpeg stream err: %v\n", me)
 	}
 }
 

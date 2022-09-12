@@ -1,8 +1,8 @@
 package main
 
 import (
-	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -54,11 +54,78 @@ func signalHandler(server *http.Server, wg *sync.WaitGroup, ctx context.Context)
 	}
 }
 
+type Config struct {
+	// MotionScoreThreshold is the number above which a frame must be to start a capture or below which frames fall to end a capture
+	MotionScoreThreshold float64 `json:"threshold"`
+
+	// MotionScoreDeactivationThreshold is the threshold below which frames must fall to stop a capture. (default same as MotionScoreThreshold
+	MotionScoreDeactivationThreshold float64 `json:"thresh-off"`
+
+	// MotionPrerollSeconds allows starting the capture just before the motion got above threshold.
+	MotionPrerollSeconds float64 `json:"pre-sec"`
+
+	// MotionPostSeconds is how long to continue capture after frames fall below MotionScoreThreshold
+	MotionPostSeconds float64 `json:"post-sec"`
+
+	// MJPEGCapturePathTemplate is the path to store motion mjpeg captures, %T gets timestamp
+	MJPEGCapturePathTemplate string `json:"mjpeg-path,omitempty"`
+
+	// MJPEGCommand is a command to pipe mjpeg data to (e.g. ["ffmpeg", ...])
+	// TODO: implement
+	// %T gets timestamp
+	MJPEGCommand []string `json:"mjpeg-cmd,omitempty"`
+
+	// MJPEGPostUrl is a url to POST "video/mjpeg" content to
+	// TODO: implement
+	MJPEGPostUrl string `json:"mjpeg-url,omitempty"`
+}
+
+func (cfg Config) anyCapture() bool {
+	if cfg.MJPEGCapturePathTemplate != "" {
+		return true
+	}
+	for _, v := range cfg.MJPEGCommand {
+		if v != "" {
+			return true
+		}
+	}
+	if cfg.MJPEGPostUrl != "" {
+		return true
+	}
+	return false
+}
+
+var defaultConfig Config = Config{
+	MotionScoreThreshold:     0.05,
+	MotionPrerollSeconds:     1.0,
+	MotionPostSeconds:        1.0,
+	MJPEGCapturePathTemplate: "",
+	MJPEGCommand:             nil,
+}
+
+/*
 var motionScoreThreshold float64 = 0.03
 var motionPrerollSeconds float64 = 1.0
 var motionPostSeconds float64 = 1.0
 var motionPostDuration time.Duration = time.Second
-var mjpegCapturePathTemplate string = ""
+   var mjpegCapturePathTemplate string = ""
+*/
+
+func formatTemplateString(x string, when time.Time) string {
+	// "%%" becomes "%"
+	// e.g. "%%T" -> "%T"
+	parts := strings.Split(x, "%%")
+	timestamp := when.Format(timestampFormat)
+	for i, p := range parts {
+		parts[i] = strings.ReplaceAll(p, "%T", timestamp)
+	}
+	return strings.Join(parts, "%")
+}
+func formatTemplateStringArray(they []string, when time.Time) {
+	for i, x := range they {
+		they[i] = formatTemplateString(x, when)
+	}
+}
 
 func main() {
 	var cmd string
@@ -70,9 +137,36 @@ func main() {
 	flag.BoolVar(&verbose, "verbose", false, "more logging")
 	var statLogPath string
 	flag.StringVar(&statLogPath, "statlog", "", "path to log json-per-line stats to")
+	var statLogPost string
+	flag.StringVar(&statLogPost, "statlog-url", "", "url to POST statlog json entries to")
+	var mjpegCapturePathTemplate string
 	flag.StringVar(&mjpegCapturePathTemplate, "mjpeg", "", "path to store motion mjpeg captures, %T gets timestamp")
 
+	var configPath string
+	flag.StringVar(&configPath, "config", "", "path to config json OR json literal")
+
 	flag.Parse()
+
+	cfg := defaultConfig
+	if configPath != "" {
+		if configPath[0] == '{' {
+			// json literal on command line
+			fin := strings.NewReader(configPath)
+			dec := json.NewDecoder(fin)
+			err := dec.Decode(&cfg)
+			maybefail(err, "-config: bad json literal config, %v", err)
+		} else {
+			fin, err := os.Open(configPath)
+			maybefail(err, "%s: %v", configPath, err)
+			defer fin.Close()
+			dec := json.NewDecoder(fin)
+			err = dec.Decode(&cfg)
+			maybefail(err, "%s: bad config, %v", configPath, err)
+		}
+	}
+	if mjpegCapturePathTemplate != "" {
+		cfg.MJPEGCapturePathTemplate = mjpegCapturePathTemplate
+	}
 
 	debug("verbose enabled")
 
@@ -92,8 +186,6 @@ func main() {
 		statLog = statLogF
 	}
 
-	motionPostDuration = time.Duration(float64(time.Second) * motionPostSeconds)
-
 	ctx := context.Background()
 
 	ctx, ctxCf := context.WithCancel(ctx)
@@ -105,6 +197,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "-cmd is required")
 		os.Exit(1)
 	}
+	jpegBlobs := make(chan []byte, 1)
 	var source *commandMJPEGSource
 	var err error
 	if cmd == "-" {
@@ -119,23 +212,28 @@ func main() {
 		source, err = JsonCmd(ctx, jsf)
 		maybefail(err, "%s: %v", cmd, err)
 	}
+	source.jpegBlobs = jpegBlobs
 	source.Init()
 	go source.Run()
-	br := bufio.NewReader(source)
-	jpegBlobs := make(chan []byte, 1)
-	go func() {
-		me := breakBinaryMJPEGStream(br, jpegBlobs)
-		fmt.Printf("mjpeg stream err: %v\n", me)
-	}()
+	/*
+		br := bufio.NewReader(source)
+		go func() {
+			me := breakBinaryMJPEGStream(br, jpegBlobs)
+			fmt.Printf("mjpeg stream err: %v\n", me)
+		}()
+	*/
 
 	js := jpegServer{
 		incoming: jpegBlobs,
+		cfg:      &cfg,
 	}
 	js.init()
 	go js.reader(ctx, nil)
 	go js.motionThread(ctx)
 	if statLog != nil {
 		js.scorestat = NewRollingKnnHistogram("s", 1000, statLog)
+	} else if statLogPost != "" {
+		js.scorestat = NewRollingKnnHistogramPOST("s", 1000, statLogPost)
 	}
 
 	server := &http.Server{

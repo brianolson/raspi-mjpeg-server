@@ -10,8 +10,8 @@ import (
 	"io"
 	"log"
 	"math"
+	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -67,6 +67,7 @@ func diffScore(a, b image.Image) (score float64, err error) {
 
 const yDiffMinThreshold = 20
 
+// TODO: reunify with jd/getsk()
 type subsampleParts struct {
 	rat image.YCbCrSubsampleRatio
 	dy  int
@@ -97,9 +98,15 @@ func getsk(im *image.YCbCr) (out subsampleParts, err error) {
 }
 
 func polarize(x, y uint8) (r, th float64) {
-	th = math.Atan2(float64(y), float64(x))
-	r = math.Sqrt(float64((x * x) + (y * y)))
+	th = math.Atan2(float64(y), float64(x))   // th in [-Pi, Pi]
+	r = math.Sqrt(float64((x * x) + (y * y))) // r in [0, 362.0]
 	return
+}
+
+var maxPolarR float64
+
+func init() {
+	maxPolarR, _ = polarize(255, 255)
 }
 
 func checkYCbCr(a, b *image.YCbCr) (err error) {
@@ -129,6 +136,23 @@ type diffScoreYCbCrStat struct {
 	Score  float64 `json:"ds"`
 }
 
+type AHist struct {
+	Ceils  []float64 `json:"c"`
+	Counts []int     `json:"n"`
+}
+
+func (ah *AHist) autoHistogram(data []float64) {
+	ah.Ceils, ah.Counts = autoHistogram(data)
+}
+
+type DiffScorePixHist struct {
+	YPHist AHist `json:"yh"`
+	CPHist AHist `json:"ch"`
+}
+
+var pixHistOut chan *DiffScorePixHist
+
+// TODO: grab whole frame stats, histogram of per-pixel score, how many pixels were at least $x score?
 func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
 	err = checkYCbCr(a, b)
 	if err != nil {
@@ -139,12 +163,24 @@ func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
 	if err != nil {
 		return
 	}
+	cheight := a.Rect.Dy() / sk.dy
+	cwidth := a.Rect.Dx() / sk.dx
+
+	var yscores []float64
+	var cscores []float64
+	doPixHist := pixHistOut != nil
+	if doPixHist {
+		yscores = make([]float64, a.YStride*a.Rect.Dy())
+		cscores = make([]float64, a.CStride*cheight)
+	}
 
 	yDiff := 0
 
-	for y := 0; y < a.Rect.Dy(); y++ {
+	height := a.Rect.Dy()
+	width := a.Rect.Dx()
+	for y := 0; y < height; y++ {
 		by := a.YStride * y
-		for x := 0; x < a.Rect.Dx(); x++ {
+		for x := 0; x < width; x++ {
 			dy := int(a.Y[by+x]) - int(b.Y[by+x])
 			if dy < 0 {
 				dy = -dy
@@ -153,26 +189,28 @@ func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
 				// nothing
 			} else {
 				// TODO: maybe a sigmoid function or some piecewise linear similar thing?
-				yDiff += int(dy)
+				yDiff += dy
+			}
+			if doPixHist {
+				yscores[by+x] = float64(dy)
 			}
 		}
 	}
 	yscore := float64(yDiff) / float64(255*a.Rect.Dx()*a.Rect.Dy())
-	cheight := a.Rect.Dy() / sk.dy
-	cwidth := a.Rect.Dx() / sk.dx
 	cscore := float64(0)
 	for y := 0; y < cheight; y++ {
 		by := a.CStride * y
 		for x := 0; x < cwidth; x++ {
 			ar, ath := polarize(a.Cb[by+x], a.Cr[by+x])
 			br, bth := polarize(b.Cb[by+x], b.Cr[by+x])
-			dth := math.Abs(ath - bth)
-			for dth > (math.Pi * 2) {
-				dth -= math.Pi
-			}
-			cscore += dth / math.Pi
+			dth := math.Abs(ath - bth) // dth in [0, 2*Pi]
+			cs := dth / (2 * math.Pi)
 			dr := math.Abs(ar - br)
-			cscore += dr / 255.0
+			cs += dr / maxPolarR
+			if doPixHist {
+				cscores[by+x] = cs
+			}
+			cscore += cs
 		}
 	}
 	cscore = cscore / float64(cheight*cwidth)
@@ -189,6 +227,17 @@ func diffScoreYCbCr(a, b *image.YCbCr) (score float64, err error) {
 			statLog.Write(blob)
 		}
 	}
+	if doPixHist {
+		ph := new(DiffScorePixHist)
+		ph.YPHist.autoHistogram(yscores)
+		ph.CPHist.autoHistogram(cscores)
+		select {
+		case pixHistOut <- ph:
+			// yay, send data
+		default:
+			// don't block, drop
+		}
+	}
 	score = yscore + cscore
 	return
 }
@@ -199,6 +248,10 @@ func (js *jpegServer) motionThread(ctx context.Context) {
 	var prev *jpegt
 	var old *jpegt
 	var then time.Time
+	scoreThreshold := js.cfg.MotionScoreThreshold
+	if js.cfg.MotionScoreDeactivationThreshold != 0 && js.cfg.MotionScoreDeactivationThreshold < scoreThreshold {
+		scoreThreshold = js.cfg.MotionScoreDeactivationThreshold
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -244,17 +297,65 @@ func (js *jpegServer) motionThread(ctx context.Context) {
 			if js.scorestat != nil {
 				js.scorestat.Add(score)
 			}
-			if score > motionScoreThreshold {
+			if score > scoreThreshold {
 				log.Printf("diff %s-%s: ds=%f", old.when, newest.when, score)
-				js.motionPing()
+				js.motionPing(score)
 			}
 		}
+		js.fetchHistograms()
 
 		prev = newest
 	}
 }
 
+func (js *jpegServer) fetchHistograms() {
+	if pixHistOut == nil {
+		return
+	}
+	for {
+		select {
+		case ph := <-pixHistOut:
+			js.histogramTail.Add(ph)
+			js.phLock.Lock()
+			for _, subscriber := range js.pixHistSubscribers {
+				select {
+				case subscriber <- ph:
+				default:
+				}
+			}
+			js.phLock.Unlock()
+		default:
+			return
+		}
+	}
+}
+func (js *jpegServer) pixHistSubscribe(subscriber chan *DiffScorePixHist) {
+	js.phLock.Lock()
+	defer js.phLock.Unlock()
+	for _, si := range js.pixHistSubscribers {
+		if si == subscriber {
+			return
+		}
+	}
+	js.pixHistSubscribers = append(js.pixHistSubscribers, subscriber)
+}
+func (js *jpegServer) pixHistUnsuscribe(subscriber chan *DiffScorePixHist) {
+	js.phLock.Lock()
+	defer js.phLock.Unlock()
+	for i, si := range js.pixHistSubscribers {
+		if si == subscriber {
+			last := len(js.pixHistSubscribers) - 1
+			if i != last {
+				js.pixHistSubscribers[i] = js.pixHistSubscribers[last]
+			}
+			js.pixHistSubscribers = js.pixHistSubscribers[:last]
+			return
+		}
+	}
+}
+
 type captureThread struct {
+	// file capture
 	out io.WriteCloser
 
 	js *jpegServer
@@ -262,6 +363,18 @@ type captureThread struct {
 	l sync.Mutex
 
 	lastPing time.Time
+
+	phchan  chan *DiffScorePixHist
+	pixHist []any
+}
+
+func (ct *captureThread) addPixHist(ph *DiffScorePixHist) {
+	select {
+	case ct.phchan <- ph:
+		// okay, sent
+	default:
+		// don't block, drop
+	}
 }
 
 func (ct *captureThread) ping() {
@@ -276,10 +389,11 @@ func (ct *captureThread) run() {
 	if newest == nil {
 		return
 	}
+	motionPostDuration := time.Duration(float64(time.Second) * ct.js.cfg.MotionPostSeconds)
 	var start time.Time
 	var current *jpegt
-	if motionPrerollSeconds > 0 {
-		start = newest.when.Add(time.Duration(-1 * motionPrerollSeconds * float64(time.Second)))
+	if ct.js.cfg.MotionPrerollSeconds > 0 {
+		start = newest.when.Add(time.Duration(-1 * ct.js.cfg.MotionPrerollSeconds * float64(time.Second)))
 		current = ct.js.getAfter(start)
 		if current == nil {
 			return
@@ -288,40 +402,90 @@ func (ct *captureThread) run() {
 		start = newest.when
 		current = newest
 	}
-	path := strings.ReplaceAll(mjpegCapturePathTemplate, "%T", start.Format(timestampFormat))
-	var err error
-	ct.out, err = os.Create(path)
-	if err != nil {
-		log.Printf("%s: %v", path, err)
+	outChans := make([]chan []byte, 0, 10)
+	if ct.js.cfg.MJPEGCapturePathTemplate != "" {
+		fileChan := make(chan []byte, 1)
+		outChans = append(outChans, fileChan)
+		go ct.file(fileChan, start)
+		defer close(fileChan)
+	}
+	if ct.js.cfg.MJPEGPostUrl != "" {
+		postChan := make(chan []byte, 1)
+		outChans = append(outChans, postChan)
+		go ct.post(postChan)
+		defer close(postChan)
+	}
+	// TODO: spawn MJPEGCommand here
+	if len(outChans) == 0 {
 		return
 	}
-	log.Printf("%s: capture started", path)
-	defer ct.out.Close()
 	defer func() {
 		if current != nil {
-			log.Printf("%s: recorded %s - %s", path, start.Format(timestampFormat), current.when.Format(timestampFormat))
+			log.Printf("recorded %s - %s", start.Format(timestampFormat), current.when.Format(timestampFormat))
 		}
 	}()
-	_, err = ct.out.Write(current.blob)
-	if err != nil {
-		log.Printf("%s: %v", path, err)
-		return
-	}
 	for {
+		for _, pc := range outChans {
+			select {
+			case pc <- current.blob:
+			default:
+			}
+		}
+		for ct.phchan != nil {
+			select {
+			case v, ok := <-ct.phchan:
+				if !ok {
+					ct.phchan = nil
+					goto phdone
+				}
+				ct.pixHist = append(ct.pixHist, v)
+			default:
+				goto phdone
+			}
+		}
+	phdone:
+
+		// get next frame
 		current = ct.js.waitAfter(current.when)
 		if current == nil {
-			log.Printf("%s: nil current", path)
+			log.Printf("nil current")
 			return
 		}
 		ct.l.Lock()
 		lp := ct.lastPing
 		ct.l.Unlock()
+		// TODO: if a frame goes above threshold in less than (MotionPrerollSeconds+MotionPostSeconds) make one long capture; don't _actually_ close a capture until after that duration of below-threshold frames. This would make MotionGapDuration obsolete?
 		if current.when.After(lp.Add(motionPostDuration)) {
-			log.Printf("%s: done", path)
-			// done
 			return
 		}
-		_, err = ct.out.Write(current.blob)
+	}
+}
+
+func (ct *captureThread) post(frames chan []byte) {
+	preader, pwriter := io.Pipe()
+	defer pwriter.Close()
+	// TODO: do some context thing so that we stop trying to send if there's an HTTP error?
+	go http.Post(ct.js.cfg.MJPEGPostUrl, "video/mjpeg", preader)
+	for blob := range frames {
+		_, err := pwriter.Write(blob)
+		if err != nil {
+			log.Printf("%s: %v", ct.js.cfg.MJPEGPostUrl, err)
+			return
+		}
+	}
+}
+
+func (ct *captureThread) file(frames chan []byte, start time.Time) {
+	path := formatTemplateString(ct.js.cfg.MJPEGCapturePathTemplate, start)
+	out, err := os.Create(path)
+	if err != nil {
+		log.Printf("%s: %v", path, err)
+		return
+	}
+	//log.Printf("%s: capture started", path) //verbose or debug level
+	defer out.Close()
+	for blob := range frames {
+		_, err := out.Write(blob)
 		if err != nil {
 			log.Printf("%s: %v", path, err)
 			return

@@ -79,6 +79,13 @@ type jpegServer struct {
 	capture *captureThread
 
 	scorestat *rollingKnnHistogram
+
+	cfg *Config
+
+	histogramTail RollingTail
+
+	phLock             sync.Mutex
+	pixHistSubscribers []chan *DiffScorePixHist
 }
 
 func (js *jpegServer) init() {
@@ -90,6 +97,7 @@ func (js *jpegServer) init() {
 		js.maxlen = 20000000
 	}
 	js.cond = sync.NewCond(&js.l)
+	js.histogramTail.Limit = 20
 }
 
 // run thread
@@ -168,20 +176,32 @@ func (js *jpegServer) push(blob []byte) {
 }
 
 // called by motionThread when threshold exceeded
-func (js *jpegServer) motionPing() {
+func (js *jpegServer) motionPing(score float64) {
 	js.l.Lock()
 	defer js.l.Unlock()
 
-	// start or continue capture
-	if js.capture == nil {
-		if mjpegCapturePathTemplate != "" {
-			js.capture = new(captureThread)
-			js.capture.js = js
-			js.capture.lastPing = js.newest.when
-			go js.capture.run()
+	if score > js.cfg.MotionScoreThreshold {
+		// high threshold met, start or continue capture
+		if js.capture == nil {
+			// start capture
+			if js.cfg.anyCapture() {
+				js.capture = new(captureThread)
+				js.capture.js = js
+				js.capture.lastPing = js.newest.when
+				js.capture.pixHist = js.histogramTail.ToArray()
+				js.capture.phchan = make(chan *DiffScorePixHist, 10)
+				js.pixHistSubscribe(js.capture.phchan)
+				go js.capture.run()
+			}
+		} else {
+			// continue capture
+			js.capture.ping()
 		}
-	} else {
-		js.capture.ping()
+	} else if js.cfg.MotionScoreDeactivationThreshold > 0 {
+		if js.capture != nil && score > js.cfg.MotionScoreDeactivationThreshold {
+			// lesser threshold met, continue
+			js.capture.ping()
+		}
 	}
 }
 
